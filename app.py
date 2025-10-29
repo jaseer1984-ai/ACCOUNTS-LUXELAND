@@ -90,8 +90,8 @@ class TransactionStatus(Enum):
     APPROVED = "Approved"
     CANCELLED = "Cancelled"
 
-CURRENCIES = ["USD", "EUR", "GBP", "CAD", "AUD", "JPY", "INR", "SAR"]
-DEFAULT_CURRENCY = "USD"
+CURRENCIES = ["INR", "USD", "EUR", "GBP", "CAD", "AUD", "JPY", "SAR", "SGD", "AED"]
+DEFAULT_CURRENCY = "INR"
 
 # ============================
 # DATABASE SCHEMA (Advanced)
@@ -371,77 +371,79 @@ def init_admin_user():
             st.info(f"🔑 Default admin created. Username: admin, Password: {ADMIN_PASSWORD}")
 
 def init_default_company():
-    """Create default company if none exists"""
+    """Check if any companies exist, if not show setup wizard"""
     with engine.begin() as conn:
         result = conn.execute(text("SELECT COUNT(*) as count FROM companies")).fetchone()
-        if result.count == 0:
-            company_id = str(uuid.uuid4())
-            conn.execute(companies.insert().values(
-                id=company_id,
-                code="DEMO",
-                name="Demo Company Ltd",
-                address="123 Business Street, City, Country",
-                tax_id="TAX123456789",
-                base_currency=DEFAULT_CURRENCY,
-                fiscal_year_start=1
-            ))
-            
-            # Create basic chart of accounts for the demo company
-            create_basic_accounts(conn, company_id)
-            
-            # Create some sample transactions for demo
-            create_sample_transactions(conn, company_id)
-            
-            st.success("✅ Demo company created with basic chart of accounts and sample transactions!")
-            return company_id
+        return result.count > 0  # Return True if companies exist
 
 def create_basic_accounts(conn, company_id: str):
     """Create a basic chart of accounts for new company"""
     basic_accounts = [
         # Assets
         ("1000", "Current Assets", AccountType.ASSET.value, True, None),
-        ("1100", "Cash and Bank", AccountType.ASSET.value, False, "1000"),
+        ("1100", "Cash in Hand", AccountType.ASSET.value, False, "1000"),
+        ("1110", "Cash at Bank", AccountType.ASSET.value, False, "1000"),
         ("1200", "Accounts Receivable", AccountType.ASSET.value, False, "1000"),
-        ("1300", "Inventory", AccountType.ASSET.value, False, "1000"),
+        ("1250", "Bills Receivable", AccountType.ASSET.value, False, "1000"),
+        ("1300", "Inventory/Stock", AccountType.ASSET.value, False, "1000"),
         ("1400", "Prepaid Expenses", AccountType.ASSET.value, False, "1000"),
+        ("1450", "Advance Tax", AccountType.ASSET.value, False, "1000"),
+        ("1460", "TDS Receivable", AccountType.ASSET.value, False, "1000"),
         
         ("1500", "Fixed Assets", AccountType.ASSET.value, True, None),
-        ("1510", "Equipment", AccountType.ASSET.value, False, "1500"),
+        ("1510", "Plant & Machinery", AccountType.ASSET.value, False, "1500"),
         ("1520", "Furniture & Fixtures", AccountType.ASSET.value, False, "1500"),
-        ("1530", "Accumulated Depreciation", AccountType.ASSET.value, False, "1500"),
+        ("1530", "Computer & Equipment", AccountType.ASSET.value, False, "1500"),
+        ("1540", "Vehicles", AccountType.ASSET.value, False, "1500"),
+        ("1550", "Building", AccountType.ASSET.value, False, "1500"),
+        ("1560", "Accumulated Depreciation", AccountType.ASSET.value, False, "1500"),
         
         # Liabilities
         ("2000", "Current Liabilities", AccountType.LIABILITY.value, True, None),
         ("2100", "Accounts Payable", AccountType.LIABILITY.value, False, "2000"),
-        ("2200", "Accrued Expenses", AccountType.LIABILITY.value, False, "2000"),
-        ("2300", "Short-term Loans", AccountType.LIABILITY.value, False, "2000"),
+        ("2150", "Bills Payable", AccountType.LIABILITY.value, False, "2000"),
+        ("2200", "Outstanding Expenses", AccountType.LIABILITY.value, False, "2000"),
+        ("2250", "GST Payable", AccountType.LIABILITY.value, False, "2000"),
+        ("2260", "TDS Payable", AccountType.LIABILITY.value, False, "2000"),
+        ("2300", "Bank Overdraft", AccountType.LIABILITY.value, False, "2000"),
+        ("2350", "Short-term Loans", AccountType.LIABILITY.value, False, "2000"),
         
         ("2500", "Long-term Liabilities", AccountType.LIABILITY.value, True, None),
-        ("2510", "Long-term Loans", AccountType.LIABILITY.value, False, "2500"),
+        ("2510", "Term Loans", AccountType.LIABILITY.value, False, "2500"),
+        ("2520", "Mortgage Loan", AccountType.LIABILITY.value, False, "2500"),
         
         # Equity
-        ("3000", "Equity", AccountType.EQUITY.value, True, None),
+        ("3000", "Capital & Reserves", AccountType.EQUITY.value, True, None),
         ("3100", "Share Capital", AccountType.EQUITY.value, False, "3000"),
-        ("3200", "Retained Earnings", AccountType.EQUITY.value, False, "3000"),
-        ("3300", "Current Year Earnings", AccountType.EQUITY.value, False, "3000"),
+        ("3200", "Reserves & Surplus", AccountType.EQUITY.value, False, "3000"),
+        ("3300", "Retained Earnings", AccountType.EQUITY.value, False, "3000"),
+        ("3400", "Current Year P&L", AccountType.EQUITY.value, False, "3000"),
         
         # Income
-        ("4000", "Revenue", AccountType.INCOME.value, True, None),
-        ("4100", "Sales Revenue", AccountType.INCOME.value, False, "4000"),
-        ("4200", "Service Revenue", AccountType.INCOME.value, False, "4000"),
+        ("4000", "Income", AccountType.INCOME.value, True, None),
+        ("4100", "Sales/Turnover", AccountType.INCOME.value, False, "4000"),
+        ("4200", "Service Income", AccountType.INCOME.value, False, "4000"),
         ("4300", "Other Income", AccountType.INCOME.value, False, "4000"),
+        ("4400", "Interest Income", AccountType.INCOME.value, False, "4000"),
+        ("4500", "Discount Received", AccountType.INCOME.value, False, "4000"),
         
         # Expenses
-        ("5000", "Operating Expenses", AccountType.EXPENSE.value, True, None),
+        ("5000", "Expenses", AccountType.EXPENSE.value, True, None),
         ("5100", "Cost of Goods Sold", AccountType.EXPENSE.value, False, "5000"),
-        ("5200", "Salaries & Wages", AccountType.EXPENSE.value, False, "5000"),
-        ("5300", "Rent Expense", AccountType.EXPENSE.value, False, "5000"),
-        ("5400", "Utilities Expense", AccountType.EXPENSE.value, False, "5000"),
-        ("5500", "Office Supplies", AccountType.EXPENSE.value, False, "5000"),
-        ("5600", "Marketing Expense", AccountType.EXPENSE.value, False, "5000"),
-        ("5700", "Insurance Expense", AccountType.EXPENSE.value, False, "5000"),
-        ("5800", "Depreciation Expense", AccountType.EXPENSE.value, False, "5000"),
-        ("5900", "Other Expenses", AccountType.EXPENSE.value, False, "5000"),
+        ("5200", "Purchase", AccountType.EXPENSE.value, False, "5000"),
+        ("5300", "Salary & Wages", AccountType.EXPENSE.value, False, "5000"),
+        ("5400", "Rent", AccountType.EXPENSE.value, False, "5000"),
+        ("5500", "Electricity Charges", AccountType.EXPENSE.value, False, "5000"),
+        ("5600", "Telephone & Internet", AccountType.EXPENSE.value, False, "5000"),
+        ("5700", "Office Expenses", AccountType.EXPENSE.value, False, "5000"),
+        ("5800", "Travel & Conveyance", AccountType.EXPENSE.value, False, "5000"),
+        ("5900", "Professional Fees", AccountType.EXPENSE.value, False, "5000"),
+        ("6000", "Insurance Premium", AccountType.EXPENSE.value, False, "5000"),
+        ("6100", "Depreciation", AccountType.EXPENSE.value, False, "5000"),
+        ("6200", "Interest on Loans", AccountType.EXPENSE.value, False, "5000"),
+        ("6300", "Bank Charges", AccountType.EXPENSE.value, False, "5000"),
+        ("6400", "GST Expenses", AccountType.EXPENSE.value, False, "5000"),
+        ("6500", "Other Expenses", AccountType.EXPENSE.value, False, "5000"),
     ]
     
     # Create parent accounts first, then children
@@ -485,122 +487,6 @@ def create_basic_accounts(conn, company_id: str):
                 is_active=True
             ))
 
-def create_sample_transactions(conn, company_id: str):
-    """Create sample transactions for demo purposes"""
-    
-    # Get account IDs for sample transactions
-    accounts_query = text("""
-        SELECT id, code FROM accounts 
-        WHERE company_id = :company_id AND is_group = 0
-    """)
-    accounts_result = conn.execute(accounts_query, {"company_id": company_id}).fetchall()
-    account_map = {row.code: row.id for row in accounts_result}
-    
-    sample_transactions = [
-        {
-            "date": dt.date.today() - dt.timedelta(days=30),
-            "type": "Journal",
-            "reference": "INIT-001",
-            "narration": "Initial capital investment",
-            "lines": [
-                {"account": "1100", "debit": 50000, "credit": 0, "desc": "Cash received"},
-                {"account": "3100", "debit": 0, "credit": 50000, "desc": "Share capital issued"}
-            ]
-        },
-        {
-            "date": dt.date.today() - dt.timedelta(days=25),
-            "type": "Purchase",
-            "reference": "PUR-001", 
-            "narration": "Office equipment purchase",
-            "lines": [
-                {"account": "1510", "debit": 5000, "credit": 0, "desc": "Computer equipment"},
-                {"account": "1100", "debit": 0, "credit": 5000, "desc": "Payment made"}
-            ]
-        },
-        {
-            "date": dt.date.today() - dt.timedelta(days=20),
-            "type": "Sales",
-            "reference": "SAL-001",
-            "narration": "First month sales revenue",
-            "lines": [
-                {"account": "1100", "debit": 15000, "credit": 0, "desc": "Cash received"},
-                {"account": "4100", "debit": 0, "credit": 15000, "desc": "Sales revenue"}
-            ]
-        },
-        {
-            "date": dt.date.today() - dt.timedelta(days=15),
-            "type": "Payment",
-            "reference": "PAY-001",
-            "narration": "Monthly rent payment",
-            "lines": [
-                {"account": "5300", "debit": 2000, "credit": 0, "desc": "Office rent expense"},
-                {"account": "1100", "debit": 0, "credit": 2000, "desc": "Cash payment"}
-            ]
-        },
-        {
-            "date": dt.date.today() - dt.timedelta(days=10),
-            "type": "Payment",
-            "reference": "PAY-002",
-            "narration": "Staff salaries",
-            "lines": [
-                {"account": "5200", "debit": 8000, "credit": 0, "desc": "Monthly salaries"},
-                {"account": "1100", "debit": 0, "credit": 8000, "desc": "Cash payment"}
-            ]
-        },
-        {
-            "date": dt.date.today() - dt.timedelta(days=5),
-            "type": "Receipt",
-            "reference": "REC-001",
-            "narration": "Service income received",
-            "lines": [
-                {"account": "1100", "debit": 3000, "credit": 0, "desc": "Cash received"},
-                {"account": "4200", "debit": 0, "credit": 3000, "desc": "Service revenue"}
-            ]
-        }
-    ]
-    
-    for i, trans in enumerate(sample_transactions):
-        # Create voucher
-        voucher_id = str(uuid.uuid4())
-        voucher_number = f"DEMO-{i+1:03d}"
-        
-        total_amount = sum(line["debit"] for line in trans["lines"])
-        
-        conn.execute(vouchers.insert().values(
-            id=voucher_id,
-            company_id=company_id,
-            number=voucher_number,
-            date=trans["date"],
-            type=trans["type"],
-            reference=trans["reference"],
-            narration=trans["narration"],
-            total_amount=total_amount,
-            currency=DEFAULT_CURRENCY,
-            exchange_rate=1.0,
-            status=TransactionStatus.POSTED.value,
-            created_by=None,  # System generated
-            posted_at=dt.datetime.utcnow()
-        ))
-        
-        # Create journal lines
-        for line_num, line in enumerate(trans["lines"], 1):
-            if line["account"] in account_map:
-                conn.execute(journal.insert().values(
-                    id=str(uuid.uuid4()),
-                    voucher_id=voucher_id,
-                    company_id=company_id,
-                    account_id=account_map[line["account"]],
-                    date=trans["date"],
-                    debit=line["debit"],
-                    credit=line["credit"],
-                    currency=DEFAULT_CURRENCY,
-                    exchange_rate=1.0,
-                    base_debit=line["debit"],
-                    base_credit=line["credit"],
-                    description=line["desc"],
-                    line_number=line_num
-                ))
-
 def authenticate_user(username: str, password: str) -> Optional[UserContext]:
     with engine.begin() as conn:
         result = conn.execute(
@@ -626,7 +512,6 @@ def authenticate_user(username: str, password: str) -> Optional[UserContext]:
 def check_advanced_auth():
     """Advanced authentication with session management"""
     init_admin_user()
-    init_default_company()
     
     if not st.session_state.get("user_context"):
         st.sidebar.markdown("### 🔐 Login")
@@ -654,14 +539,135 @@ def check_advanced_auth():
         - Password: `admin123`
         
         **After login:**
-        1. Demo company will be auto-created
-        2. Basic chart of accounts included
-        3. Start posting transactions!
+        1. Create your company
+        2. Setup chart of accounts
+        3. Start accounting!
         """)
         
         return False
     
     return True
+
+def render_company_setup_wizard(user: UserContext):
+    """Company setup wizard for first-time users"""
+    st.markdown("""
+    <div style="background: linear-gradient(90deg, #1f77b4, #2ca02c); color: white; padding: 2rem; border-radius: 10px; margin-bottom: 2rem;">
+        <h1>🏢 Welcome to Enterprise Accounting!</h1>
+        <p>Let's set up your first company to get started.</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.subheader("🏗️ Create Your Company")
+    st.markdown("Fill in your company details below. You can always add more companies later.")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**Basic Information**")
+        company_code = st.text_input(
+            "Company Code*", 
+            placeholder="e.g., ACME, ABC, XYZ",
+            help="Short unique code for your company (3-10 characters)"
+        )
+        company_name = st.text_input(
+            "Company Name*", 
+            placeholder="e.g., Your Company Pvt Ltd",
+            help="Full legal name of your company"
+        )
+        base_currency = st.selectbox(
+            "Base Currency*", 
+            CURRENCIES, 
+            index=0,  # INR is now first
+            help="Primary currency for your accounting"
+        )
+        
+    with col2:
+        st.markdown("**Additional Details**")
+        tax_id = st.text_input(
+            "Tax ID/GST Number", 
+            placeholder="e.g., 27AABCU9603R1ZU",
+            help="GST number, PAN, or tax identification number"
+        )
+        fiscal_start = st.selectbox(
+            "Fiscal Year Start", 
+            ["April", "January", "February", "March", "May", "June",
+             "July", "August", "September", "October", "November", "December"],
+            index=0,  # April is common in India
+            help="Month when your fiscal year begins"
+        )
+        
+    st.markdown("**Company Address**")
+    address = st.text_area(
+        "Address", 
+        placeholder="Street Address, City, State, PIN Code, Country",
+        help="Complete business address"
+    )
+    
+    st.markdown("**Chart of Accounts Setup**")
+    create_accounts = st.checkbox(
+        "Create standard chart of accounts", 
+        value=True,
+        help="Creates a complete set of business accounts (Assets, Liabilities, Income, Expenses)"
+    )
+    
+    if create_accounts:
+        st.info("📊 We'll create 30+ standard business accounts including Cash, Bank, Sales, Expenses, etc.")
+    
+    col1, col2, col3 = st.columns([1, 1, 1])
+    
+    with col2:
+        if st.button("🚀 Create Company & Start Accounting", type="primary", use_container_width=True):
+            if not company_code or not company_name:
+                st.error("❌ Company code and name are required")
+                return
+            
+            if len(company_code) < 2 or len(company_code) > 10:
+                st.error("❌ Company code should be 2-10 characters")
+                return
+            
+            try:
+                fiscal_month = ["January", "February", "March", "April", "May", "June",
+                               "July", "August", "September", "October", "November", "December"].index(fiscal_start) + 1
+                
+                with engine.begin() as conn:
+                    company_id = str(uuid.uuid4())
+                    conn.execute(companies.insert().values(
+                        id=company_id,
+                        code=company_code.strip().upper(),
+                        name=company_name.strip(),
+                        address=address.strip() if address else None,
+                        tax_id=tax_id.strip() if tax_id else None,
+                        base_currency=base_currency,
+                        fiscal_year_start=fiscal_month
+                    ))
+                    
+                    # Create basic chart of accounts if requested
+                    if create_accounts:
+                        create_basic_accounts(conn, company_id)
+                    
+                    # Log audit
+                    log_audit_event(conn, company_id, user.id, "COMPANY_CREATED", 
+                                   "companies", company_id, {}, {
+                                       "code": company_code, "name": company_name,
+                                       "currency": base_currency
+                                   })
+                
+                st.success("🎉 Company created successfully!")
+                st.balloons()
+                
+                if create_accounts:
+                    st.success("📊 Standard chart of accounts created with 30+ business accounts")
+                
+                st.info("🔄 Refreshing application...")
+                import time
+                time.sleep(2)
+                st.rerun()
+                
+            except Exception as e:
+                if "UNIQUE constraint failed" in str(e):
+                    st.error(f"❌ Company code '{company_code}' already exists. Please choose a different code.")
+                else:
+                    st.error(f"❌ Error creating company: {str(e)}")
 
 def get_user_companies(user: UserContext) -> List[CompanyContext]:
     """Get companies accessible to current user"""
@@ -1331,10 +1337,11 @@ def main():
     
     user = st.session_state["user_context"]
     
-    # Company Selection
+    # Company Selection or Setup
     companies = get_user_companies(user)
     if not companies:
-        st.error("No companies accessible. Please contact your administrator.")
+        # Show company setup wizard for first-time users
+        render_company_setup_wizard(user)
         st.stop()
     
     with st.sidebar:
