@@ -411,7 +411,7 @@ if page == "Dashboard":
 elif page == "Vouchers":
     st.subheader("Create Voucher (double-entry, multi-line)")
     accounts = read_csv("accounts.csv", ACCOUNT_COLS)
-    leaf_accounts = accounts[[aid for aid in accounts.index if is_leaf_account(accounts, accounts.loc[aid, 'account_id'])]]
+    # (Fixed) Do not precompute leaf_accounts with column indexing; we build options lazily below.
 
     if accounts.empty or len(accounts) < 5:
         st.info("Tip: add leaf accounts under 'Masters' (e.g., Bank, Cash, Sales, Purchases)")
