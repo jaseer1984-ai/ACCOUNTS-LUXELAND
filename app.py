@@ -370,6 +370,237 @@ def init_admin_user():
             ))
             st.info(f"🔑 Default admin created. Username: admin, Password: {ADMIN_PASSWORD}")
 
+def init_default_company():
+    """Create default company if none exists"""
+    with engine.begin() as conn:
+        result = conn.execute(text("SELECT COUNT(*) as count FROM companies")).fetchone()
+        if result.count == 0:
+            company_id = str(uuid.uuid4())
+            conn.execute(companies.insert().values(
+                id=company_id,
+                code="DEMO",
+                name="Demo Company Ltd",
+                address="123 Business Street, City, Country",
+                tax_id="TAX123456789",
+                base_currency=DEFAULT_CURRENCY,
+                fiscal_year_start=1
+            ))
+            
+            # Create basic chart of accounts for the demo company
+            create_basic_accounts(conn, company_id)
+            
+            # Create some sample transactions for demo
+            create_sample_transactions(conn, company_id)
+            
+            st.success("✅ Demo company created with basic chart of accounts and sample transactions!")
+            return company_id
+
+def create_basic_accounts(conn, company_id: str):
+    """Create a basic chart of accounts for new company"""
+    basic_accounts = [
+        # Assets
+        ("1000", "Current Assets", AccountType.ASSET.value, True, None),
+        ("1100", "Cash and Bank", AccountType.ASSET.value, False, "1000"),
+        ("1200", "Accounts Receivable", AccountType.ASSET.value, False, "1000"),
+        ("1300", "Inventory", AccountType.ASSET.value, False, "1000"),
+        ("1400", "Prepaid Expenses", AccountType.ASSET.value, False, "1000"),
+        
+        ("1500", "Fixed Assets", AccountType.ASSET.value, True, None),
+        ("1510", "Equipment", AccountType.ASSET.value, False, "1500"),
+        ("1520", "Furniture & Fixtures", AccountType.ASSET.value, False, "1500"),
+        ("1530", "Accumulated Depreciation", AccountType.ASSET.value, False, "1500"),
+        
+        # Liabilities
+        ("2000", "Current Liabilities", AccountType.LIABILITY.value, True, None),
+        ("2100", "Accounts Payable", AccountType.LIABILITY.value, False, "2000"),
+        ("2200", "Accrued Expenses", AccountType.LIABILITY.value, False, "2000"),
+        ("2300", "Short-term Loans", AccountType.LIABILITY.value, False, "2000"),
+        
+        ("2500", "Long-term Liabilities", AccountType.LIABILITY.value, True, None),
+        ("2510", "Long-term Loans", AccountType.LIABILITY.value, False, "2500"),
+        
+        # Equity
+        ("3000", "Equity", AccountType.EQUITY.value, True, None),
+        ("3100", "Share Capital", AccountType.EQUITY.value, False, "3000"),
+        ("3200", "Retained Earnings", AccountType.EQUITY.value, False, "3000"),
+        ("3300", "Current Year Earnings", AccountType.EQUITY.value, False, "3000"),
+        
+        # Income
+        ("4000", "Revenue", AccountType.INCOME.value, True, None),
+        ("4100", "Sales Revenue", AccountType.INCOME.value, False, "4000"),
+        ("4200", "Service Revenue", AccountType.INCOME.value, False, "4000"),
+        ("4300", "Other Income", AccountType.INCOME.value, False, "4000"),
+        
+        # Expenses
+        ("5000", "Operating Expenses", AccountType.EXPENSE.value, True, None),
+        ("5100", "Cost of Goods Sold", AccountType.EXPENSE.value, False, "5000"),
+        ("5200", "Salaries & Wages", AccountType.EXPENSE.value, False, "5000"),
+        ("5300", "Rent Expense", AccountType.EXPENSE.value, False, "5000"),
+        ("5400", "Utilities Expense", AccountType.EXPENSE.value, False, "5000"),
+        ("5500", "Office Supplies", AccountType.EXPENSE.value, False, "5000"),
+        ("5600", "Marketing Expense", AccountType.EXPENSE.value, False, "5000"),
+        ("5700", "Insurance Expense", AccountType.EXPENSE.value, False, "5000"),
+        ("5800", "Depreciation Expense", AccountType.EXPENSE.value, False, "5000"),
+        ("5900", "Other Expenses", AccountType.EXPENSE.value, False, "5000"),
+    ]
+    
+    # Create parent accounts first, then children
+    account_map = {}
+    
+    # First pass: Create parent accounts (is_group = True)
+    for code, name, acc_type, is_group, parent_code in basic_accounts:
+        if is_group:
+            account_id = str(uuid.uuid4())
+            account_map[code] = account_id
+            conn.execute(accounts.insert().values(
+                id=account_id,
+                company_id=company_id,
+                code=code,
+                name=name,
+                type=acc_type,
+                parent_id=None,
+                level=0,
+                is_group=True,
+                currency=DEFAULT_CURRENCY,
+                is_active=True
+            ))
+    
+    # Second pass: Create child accounts
+    for code, name, acc_type, is_group, parent_code in basic_accounts:
+        if not is_group:
+            account_id = str(uuid.uuid4())
+            parent_id = account_map.get(parent_code) if parent_code else None
+            level = 1 if parent_id else 0
+            
+            conn.execute(accounts.insert().values(
+                id=account_id,
+                company_id=company_id,
+                code=code,
+                name=name,
+                type=acc_type,
+                parent_id=parent_id,
+                level=level,
+                is_group=False,
+                currency=DEFAULT_CURRENCY,
+                is_active=True
+            ))
+
+def create_sample_transactions(conn, company_id: str):
+    """Create sample transactions for demo purposes"""
+    
+    # Get account IDs for sample transactions
+    accounts_query = text("""
+        SELECT id, code FROM accounts 
+        WHERE company_id = :company_id AND is_group = 0
+    """)
+    accounts_result = conn.execute(accounts_query, {"company_id": company_id}).fetchall()
+    account_map = {row.code: row.id for row in accounts_result}
+    
+    sample_transactions = [
+        {
+            "date": dt.date.today() - dt.timedelta(days=30),
+            "type": "Journal",
+            "reference": "INIT-001",
+            "narration": "Initial capital investment",
+            "lines": [
+                {"account": "1100", "debit": 50000, "credit": 0, "desc": "Cash received"},
+                {"account": "3100", "debit": 0, "credit": 50000, "desc": "Share capital issued"}
+            ]
+        },
+        {
+            "date": dt.date.today() - dt.timedelta(days=25),
+            "type": "Purchase",
+            "reference": "PUR-001", 
+            "narration": "Office equipment purchase",
+            "lines": [
+                {"account": "1510", "debit": 5000, "credit": 0, "desc": "Computer equipment"},
+                {"account": "1100", "debit": 0, "credit": 5000, "desc": "Payment made"}
+            ]
+        },
+        {
+            "date": dt.date.today() - dt.timedelta(days=20),
+            "type": "Sales",
+            "reference": "SAL-001",
+            "narration": "First month sales revenue",
+            "lines": [
+                {"account": "1100", "debit": 15000, "credit": 0, "desc": "Cash received"},
+                {"account": "4100", "debit": 0, "credit": 15000, "desc": "Sales revenue"}
+            ]
+        },
+        {
+            "date": dt.date.today() - dt.timedelta(days=15),
+            "type": "Payment",
+            "reference": "PAY-001",
+            "narration": "Monthly rent payment",
+            "lines": [
+                {"account": "5300", "debit": 2000, "credit": 0, "desc": "Office rent expense"},
+                {"account": "1100", "debit": 0, "credit": 2000, "desc": "Cash payment"}
+            ]
+        },
+        {
+            "date": dt.date.today() - dt.timedelta(days=10),
+            "type": "Payment",
+            "reference": "PAY-002",
+            "narration": "Staff salaries",
+            "lines": [
+                {"account": "5200", "debit": 8000, "credit": 0, "desc": "Monthly salaries"},
+                {"account": "1100", "debit": 0, "credit": 8000, "desc": "Cash payment"}
+            ]
+        },
+        {
+            "date": dt.date.today() - dt.timedelta(days=5),
+            "type": "Receipt",
+            "reference": "REC-001",
+            "narration": "Service income received",
+            "lines": [
+                {"account": "1100", "debit": 3000, "credit": 0, "desc": "Cash received"},
+                {"account": "4200", "debit": 0, "credit": 3000, "desc": "Service revenue"}
+            ]
+        }
+    ]
+    
+    for i, trans in enumerate(sample_transactions):
+        # Create voucher
+        voucher_id = str(uuid.uuid4())
+        voucher_number = f"DEMO-{i+1:03d}"
+        
+        total_amount = sum(line["debit"] for line in trans["lines"])
+        
+        conn.execute(vouchers.insert().values(
+            id=voucher_id,
+            company_id=company_id,
+            number=voucher_number,
+            date=trans["date"],
+            type=trans["type"],
+            reference=trans["reference"],
+            narration=trans["narration"],
+            total_amount=total_amount,
+            currency=DEFAULT_CURRENCY,
+            exchange_rate=1.0,
+            status=TransactionStatus.POSTED.value,
+            created_by=None,  # System generated
+            posted_at=dt.datetime.utcnow()
+        ))
+        
+        # Create journal lines
+        for line_num, line in enumerate(trans["lines"], 1):
+            if line["account"] in account_map:
+                conn.execute(journal.insert().values(
+                    id=str(uuid.uuid4()),
+                    voucher_id=voucher_id,
+                    company_id=company_id,
+                    account_id=account_map[line["account"]],
+                    date=trans["date"],
+                    debit=line["debit"],
+                    credit=line["credit"],
+                    currency=DEFAULT_CURRENCY,
+                    exchange_rate=1.0,
+                    base_debit=line["debit"],
+                    base_credit=line["credit"],
+                    description=line["desc"],
+                    line_number=line_num
+                ))
+
 def authenticate_user(username: str, password: str) -> Optional[UserContext]:
     with engine.begin() as conn:
         result = conn.execute(
@@ -395,6 +626,7 @@ def authenticate_user(username: str, password: str) -> Optional[UserContext]:
 def check_advanced_auth():
     """Advanced authentication with session management"""
     init_admin_user()
+    init_default_company()
     
     if not st.session_state.get("user_context"):
         st.sidebar.markdown("### 🔐 Login")
@@ -412,6 +644,20 @@ def check_advanced_auth():
                     st.rerun()
                 else:
                     st.error("Invalid credentials")
+        
+        # Show helpful first-time setup info
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("### 🚀 First Time Setup")
+        st.sidebar.info("""
+        **Default Login:**
+        - Username: `admin`
+        - Password: `admin123`
+        
+        **After login:**
+        1. Demo company will be auto-created
+        2. Basic chart of accounts included
+        3. Start posting transactions!
+        """)
         
         return False
     
@@ -1120,6 +1366,7 @@ def main():
                 "📜 Journal Browser",
                 "🏗️ Chart of Accounts",
                 "👥 User Management",
+                "🏢 Company Management",
                 "🔍 Audit Trail"
             ]
         else:
@@ -1158,6 +1405,8 @@ def main():
         render_chart_of_accounts(current_company, user)
     elif selected_page == "👥 User Management" and user.role == UserRole.ADMIN:
         render_user_management(current_company, user)
+    elif selected_page == "🏢 Company Management" and user.role == UserRole.ADMIN:
+        render_company_management(user)
     elif selected_page == "🔍 Audit Trail":
         render_audit_trail(current_company, user)
 
@@ -1573,6 +1822,91 @@ def render_user_management(company: CompanyContext, user: UserContext):
             
         except Exception as e:
             st.error(f"Error creating user: {str(e)}")
+
+def render_company_management(user: UserContext):
+    """Company management for admins"""
+    st.header("🏢 Company Management")
+    
+    if user.role != UserRole.ADMIN:
+        st.error("Access denied. Admin role required.")
+        return
+    
+    # Display current companies
+    with engine.begin() as conn:
+        companies_query = text("""
+            SELECT id, code, name, address, tax_id, base_currency, 
+                   fiscal_year_start, is_active, created_at
+            FROM companies
+            ORDER BY created_at DESC
+        """)
+        companies_df = pd.read_sql(companies_query, conn)
+    
+    if not companies_df.empty:
+        st.subheader("Current Companies")
+        display_df = companies_df[['code', 'name', 'base_currency', 'fiscal_year_start', 'is_active']].copy()
+        display_df['fiscal_year_start'] = display_df['fiscal_year_start'].apply(
+            lambda x: dt.date(2024, x, 1).strftime('%B')
+        )
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+    
+    # Add new company
+    st.subheader("➕ Add New Company")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        company_code = st.text_input("Company Code", placeholder="ACME")
+        company_name = st.text_input("Company Name", placeholder="ACME Corporation Ltd")
+        base_currency = st.selectbox("Base Currency", CURRENCIES, index=0)
+    
+    with col2:
+        tax_id = st.text_input("Tax ID", placeholder="TAX123456789")
+        fiscal_start = st.selectbox("Fiscal Year Start", [
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December"
+        ], index=0)
+        create_accounts = st.checkbox("Create basic chart of accounts", value=True)
+    
+    address = st.text_area("Address", placeholder="123 Business Street, City, Country")
+    
+    if st.button("🏢 Create Company", type="primary"):
+        if not company_code or not company_name:
+            st.error("Company code and name are required")
+            return
+        
+        try:
+            fiscal_month = ["January", "February", "March", "April", "May", "June",
+                           "July", "August", "September", "October", "November", "December"].index(fiscal_start) + 1
+            
+            with engine.begin() as conn:
+                company_id = str(uuid.uuid4())
+                conn.execute(companies.insert().values(
+                    id=company_id,
+                    code=company_code.strip().upper(),
+                    name=company_name.strip(),
+                    address=address.strip() if address else None,
+                    tax_id=tax_id.strip() if tax_id else None,
+                    base_currency=base_currency,
+                    fiscal_year_start=fiscal_month
+                ))
+                
+                # Create basic chart of accounts if requested
+                if create_accounts:
+                    create_basic_accounts(conn, company_id)
+                
+                # Log audit
+                log_audit_event(conn, company_id, user.id, "COMPANY_CREATED", 
+                               "companies", company_id, {}, {
+                                   "code": company_code, "name": company_name
+                               })
+            
+            st.success(f"✅ Company {company_code} - {company_name} created successfully!")
+            if create_accounts:
+                st.info("📊 Basic chart of accounts created with standard business accounts")
+            st.rerun()
+            
+        except Exception as e:
+            st.error(f"Error creating company: {str(e)}")
 
 def render_audit_trail(company: CompanyContext, user: UserContext):
     """Audit trail browser"""
