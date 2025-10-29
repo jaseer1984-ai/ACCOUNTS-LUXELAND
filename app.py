@@ -432,13 +432,21 @@ elif page == "Vouchers":
 
     lines = st.session_state['lines']
 
+    # Precompute opts once
+    _leaf_opts = leaf_options()
+    _labels = [lbl for lbl, _ in _leaf_opts]
+    _map = dict(_leaf_opts)
+
+    if len(_labels) == 0:
+        st.warning("No leaf accounts available. Go to **Masters** and add accounts like Bank, Cash, Sales, Purchases, Expenses, etc. Then return here.")
+
     # Helper: account options (leaf-only)
     def leaf_options():
         acc = read_csv("accounts.csv", ACCOUNT_COLS)
-        # Filter for leaves
+        # Filter for true leaves: must have no children AND must have a parent (avoid root heads)
         leaves = []
         for _, r in acc.iterrows():
-            if is_leaf_account(acc, r['account_id']):
+            if is_leaf_account(acc, r['account_id']) and pd.notna(r['parent_id']):
                 leaves.append((f"{r['account_id']} — {r['name']} ({r['type']})", r['account_id']))
         return leaves
 
@@ -448,13 +456,13 @@ elif page == "Vouchers":
             c1, c2, c3, c4, c5 = st.columns([3, 1.2, 1.2, 3, 0.8])
             choice = c1.selectbox(
                 f"Account (row {i+1})",
-                options=["Select account..."] + [lbl for lbl, _ in leaf_options()],
+                options=["Select account..."] + [lbl for lbl, _ in _leaf_opts],
                 index=0,
                 key=f"acc_{i}"
             )
             if choice != "Select account...":
                 # Map back to account_id
-                acc_id = dict(leaf_options())[choice]
+                acc_id = dict(_leaf_opts).get(choice, "")
                 row['account_id'] = acc_id
             row['debit'] = c2.number_input("Debit", min_value=0.0, step=0.01, key=f"dr_{i}", value=float(row.get('debit',0)))
             row['credit'] = c3.number_input("Credit", min_value=0.0, step=0.01, key=f"cr_{i}", value=float(row.get('credit',0)))
