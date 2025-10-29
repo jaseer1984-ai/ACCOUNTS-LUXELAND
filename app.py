@@ -275,7 +275,7 @@ def trial_balance(as_on: date | None = None) -> pd.DataFrame:
 
     df = entries.copy()
     if df.empty:
-        return pd.DataFrame(columns=["Account ID", "Account Name", "Debit", "Credit"])
+        return pd.DataFrame(columns=["Account ID", "Account Name", "Debit", "Credit", "type"])
 
     if as_on:
         v_ok = vouchers.loc[pd.to_datetime(vouchers["date"]) <= pd.to_datetime(as_on), "voucher_id"]
