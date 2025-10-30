@@ -20,7 +20,7 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 
-APP_TITLE = "Masters Luxe Land LLP "
+APP_TITLE = "Masters Luxe Land LLP"
 VERSION = "2.2.0"
 CURRENCY = "INR"
 DATA_DIR = "data"
@@ -443,73 +443,162 @@ def page_dashboard():
         st.dataframe(v[["voucher_id", "date", "narration", "reference"]], use_container_width=True)
 
 
+def _render_voucher_form(mode: str):
+    """Shared voucher UI with behavior per mode: 'Journal' | 'Payment' | 'Receipt'.
+    Payment: credit selected Cash/Bank; Receipt: debit selected Cash/Bank. Journal: free-form.
+    """
+    leaves = svc.leaf_accounts()
+    if not leaves:
+        st.warning("No leaf accounts. Add accounts in Masters first.")
+        return
+
+    # Identify probable cash/bank accounts by name or type heuristic
+    leaf_df = svc.accounts()
+    bank_like = []
+    if not leaf_df.empty:
+        for _, r in leaf_df.iterrows():
+            if pd.notna(r.get("parent_id")) and str(r["account_id"]) in {acc_id for _, acc_id in leaves}:
+                name = str(r.get("name", "")).lower()
+                if ("bank" in name) or ("cash" in name) or (r.get("type") == "Assets"):
+                    bank_like.append((f"{r['account_id']} — {r['name']}", str(r['account_id'])))
+
+    col1, col2 = st.columns(2)
+    with col1:
+        vdate = st.date_input("Date", value=date.today(), key=f"vdate_{mode}")
+    with col2:
+        ref = st.text_input("Reference/Cheque No.", key=f"ref_{mode}")
+
+    default_tag = {"Journal": "[Journal]", "Payment": "[Payment]", "Receipt": "[Receipt]"}.get(mode, "")
+    narr = st.text_area("Narration", value=default_tag+" ", key=f"narr_{mode}")
+
+    # Per-mode bank/cash selector
+    bank_acc_id = None
+    if mode in ("Payment", "Receipt"):
+        st.markdown("#### Cash/Bank Account")
+        if bank_like:
+            bank_opts = [lbl for lbl, _ in bank_like]
+            selected_bank = st.selectbox("Select Cash/Bank", bank_opts, key=f"bank_{mode}")
+            bank_map = dict(bank_like)
+            bank_acc_id = bank_map.get(selected_bank)
+        else:
+            st.info("Tip: create Cash/Bank accounts under Assets so they appear here.")
+
+    # Session lines per mode
+    key_lines = f"lines_{mode}"
+    if key_lines not in st.session_state:
+        st.session_state[key_lines] = [{"account_id": "", "debit": 0.0, "credit": 0.0, "description": ""}]
+    lines = st.session_state[key_lines]
+
+    rm = None
+    for i, ln in enumerate(lines):
+        with st.container(border=True):
+            c1, c2, c3, c4, c5 = st.columns([3, 1.2, 1.2, 2.4, 0.6])
+            with c1:
+                opts = ["Select account..."] + [lbl for lbl, _ in leaves]
+                amap = dict(leaves)
+                sel = st.selectbox(f"Account (Line {i+1})", opts, key=f"{mode}_acc_{i}")
+                if sel != "Select account...":
+                    ln["account_id"] = amap.get(sel, "")
+            with c2:
+                ln["debit"] = st.number_input("Debit", min_value=0.0, step=0.01, value=float(ln.get("debit", 0)), key=f"{mode}_dr_{i}")
+            with c3:
+                ln["credit"] = st.number_input("Credit", min_value=0.0, step=0.01, value=float(ln.get("credit", 0)), key=f"{mode}_cr_{i}")
+            with c4:
+                ln["description"] = st.text_input("Description", value=ln.get("description", ""), key=f"{mode}_ds_{i}")
+            with c5:
+                if st.button("🗑️", key=f"{mode}_del_{i}"):
+                    rm = i
+    if rm is not None:
+        lines.pop(rm)
+        st.rerun()
+
+    c1, c2, c3, c4 = st.columns(4)
+    if c1.button("➕ Add Line", key=f"add_{mode}"):
+        lines.append({"account_id": "", "debit": 0.0, "credit": 0.0, "description": ""})
+        st.rerun()
+    if c2.button("🧹 Clear All", key=f"clear_{mode}"):
+        st.session_state[key_lines] = []
+        st.rerun()
+
+    # Helpers for Payment/Receipt
+    if mode in ("Payment", "Receipt") and bank_acc_id:
+        h1, h2 = st.columns(2)
+        with h1:
+            if st.button("➕ Add Bank/Cash Line", key=f"addbank_{mode}"):
+                # For Payment: credit bank; For Receipt: debit bank
+                new_line = {"account_id": bank_acc_id, "debit": 0.0, "credit": 0.0, "description": f"{mode} — Cash/Bank"}
+                if mode == "Receipt":
+                    new_line["debit"] = 0.01  # small placeholder to reveal the field
+                    new_line["debit"] = 0.0
+                lines.append(new_line)
+                st.rerun()
+        with h2:
+            if st.button("⚖️ Auto-balance to Cash/Bank", key=f"autobal_{mode}"):
+                td = sum(float(l.get("debit", 0) or 0) for l in lines)
+                tc = sum(float(l.get("credit", 0) or 0) for l in lines)
+                diff = round(td - tc, 2)
+                if abs(diff) < 0.01:
+                    st.info("Already balanced.")
+                else:
+                    # try to find a bank line; if not, create one
+                    bank_line = None
+                    for l in lines:
+                        if str(l.get("account_id")) == str(bank_acc_id):
+                            bank_line = l
+                            break
+                    if bank_line is None:
+                        bank_line = {"account_id": bank_acc_id, "debit": 0.0, "credit": 0.0, "description": f"{mode} — Auto balance"}
+                        lines.append(bank_line)
+                    # For Payment (Dr>Cr expected), set bank credit to cover; For Receipt, set bank debit
+                    if mode == "Payment":
+                        # Need credits to equal debits → increase bank credit by (td - tc)
+                        bank_line["credit"] = round(float(bank_line.get("credit", 0) or 0) + max(diff, 0), 2)
+                        if diff < 0:
+                            # too much credit overall → put debit to bank
+                            bank_line["debit"] = round(float(bank_line.get("debit", 0) or 0) + abs(diff), 2)
+                    else:  # Receipt
+                        bank_line["debit"] = round(float(bank_line.get("debit", 0) or 0) + max(-diff, 0), 2)
+                        if diff > 0:
+                            # too much debit overall → add credit to bank
+                            bank_line["credit"] = round(float(bank_line.get("credit", 0) or 0) + diff, 2)
+                    st.rerun()
+
+    td = sum(float(l.get("debit", 0) or 0) for l in lines)
+    tc = sum(float(l.get("credit", 0) or 0) for l in lines)
+    diff = td - tc
+    d1, d2, d3 = st.columns(3)
+    d1.metric("Total Debit", format_inr(td))
+    d2.metric("Total Credit", format_inr(tc))
+    d3.metric("Difference", format_inr(diff))
+    if abs(diff) >= 0.01:
+        st.error("Voucher is not balanced.")
+
+    # Post
+    if st.button("💾 Post Voucher", type="primary", disabled=(abs(diff) >= 0.01), key=f"post_{mode}"):
+        if not narr.strip():
+            st.error("Please enter a narration.")
+        else:
+            ok, res = svc.post(vdate, f"{default_tag} " + narr.strip(), ref, lines)
+            if ok:
+                st.success(f"Voucher posted: {res}")
+                st.session_state[key_lines] = []
+                st.rerun()
+            else:
+                st.error(res)
+
+
 def page_vouchers():
     st.subheader("📝 Voucher Management")
     t1, t2 = st.tabs(["Create Voucher", "View Vouchers"])
 
     with t1:
-        leaves = svc.leaf_accounts()
-        if not leaves:
-            st.warning("No leaf accounts. Add accounts in Masters first.")
-            return
-        col1, col2 = st.columns(2)
-        with col1:
-            vdate = st.date_input("Date", value=date.today())
-        with col2:
-            ref = st.text_input("Reference/Cheque No.")
-        narr = st.text_area("Narration")
-        if "lines" not in st.session_state:
-            st.session_state.lines = [{"account_id": "", "debit": 0.0, "credit": 0.0, "description": ""}]
-        lines = st.session_state.lines
-        rm = None
-        for i, ln in enumerate(lines):
-            with st.container(border=True):
-                c1, c2, c3, c4, c5 = st.columns([3, 1.3, 1.3, 2.4, 0.6])
-                with c1:
-                    opts = ["Select account..."] + [lbl for lbl, _ in leaves]
-                    amap = dict(leaves)
-                    sel = st.selectbox(f"Account (Line {i+1})", opts, key=f"acc_{i}")
-                    if sel != "Select account...":
-                        ln["account_id"] = amap.get(sel, "")
-                with c2:
-                    ln["debit"] = st.number_input("Debit", min_value=0.0, step=0.01, value=float(ln.get("debit", 0)), key=f"dr_{i}")
-                with c3:
-                    ln["credit"] = st.number_input("Credit", min_value=0.0, step=0.01, value=float(ln.get("credit", 0)), key=f"cr_{i}")
-                with c4:
-                    ln["description"] = st.text_input("Description", value=ln.get("description", ""), key=f"ds_{i}")
-                with c5:
-                    if st.button("🗑️", key=f"del_{i}"):
-                        rm = i
-        if rm is not None:
-            lines.pop(rm)
-            st.rerun()
-        c1, c2, c3, c4 = st.columns(4)
-        if c1.button("➕ Add Line"):
-            lines.append({"account_id": "", "debit": 0.0, "credit": 0.0, "description": ""})
-            st.rerun()
-        if c2.button("🧹 Clear All"):
-            st.session_state.lines = []
-            st.rerun()
-        td = sum(float(l.get("debit", 0) or 0) for l in lines)
-        tc = sum(float(l.get("credit", 0) or 0) for l in lines)
-        diff = td - tc
-        d1, d2, d3 = st.columns(3)
-        d1.metric("Total Debit", format_inr(td))
-        d2.metric("Total Credit", format_inr(tc))
-        d3.metric("Difference", format_inr(diff))
-        if diff != 0:
-            st.error("Voucher is not balanced.")
-        if st.button("💾 Post Voucher", type="primary", disabled=(diff != 0)):
-            if not narr.strip():
-                st.error("Please enter a narration.")
-            else:
-                ok, res = svc.post(vdate, narr, ref, lines)
-                if ok:
-                    st.success(f"Voucher posted: {res}")
-                    st.session_state.lines = []
-                    st.rerun()
-                else:
-                    st.error(res)
+        sj, sp, sr = st.tabs(["Journal", "Payment", "Receipt"])
+        with sj:
+            _render_voucher_form("Journal")
+        with sp:
+            _render_voucher_form("Payment")
+        with sr:
+            _render_voucher_form("Receipt")
 
     with t2:
         col1, col2 = st.columns([2, 1])
@@ -529,7 +618,8 @@ def page_vouchers():
             st.download_button("📥 Download CSV", v.to_csv(index=False), file_name=f"vouchers_{date.today()}.csv", mime="text/csv")
 
 
-def page_ledger():
+
+def page_ledger":}]}():
     st.subheader("📚 Account Ledger")
     leaves = svc.leaf_accounts()
     if not leaves:
@@ -829,7 +919,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
