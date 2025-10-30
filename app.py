@@ -1,10 +1,13 @@
-# app.py — Advanced Accounting System (INR) v2.2 (fixed)
+# app.py — Advanced Accounting System (INR) v2.3
 # -------------------------------------------------
-# New in v2.2
+# New:
 # - Left-side vertical navigation (tabs-like menu)
-# - Voucher → Create Voucher now has 3 sub-tabs: Journal, Payment, Receipt
+# - Vouchers → Journal / Payment / Receipt sub-tabs
 # - Auto-generation of Account Codes (root & child)
-# - Keeps v2.1 fixes: opening balance in ledger, safer DB, import/export, audit trail
+# - Trial Balance: Excel download with proper ₹ formatting (and CSV with BOM)
+# - Ledger: Excel + PDF download
+# - Management Report page (KPIs + Top Accounts) with PDF/Excel
+# - Opening balance in Ledger
 
 from __future__ import annotations
 import os
@@ -21,8 +24,15 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 
-APP_TITLE = "Accounting System"
-VERSION = "2.2.0"
+# ---- PDF helpers (install: pip install reportlab) ----
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.units import mm
+
+APP_TITLE = "Masters Luxe Land LLP — Advanced Accounting System"
+VERSION = "2.3.0"
 CURRENCY = "INR"
 DATA_DIR = "data"
 DB_PATH = os.path.join(DATA_DIR, "accounting.db")
@@ -207,7 +217,7 @@ class Service:
         for _, r in a.iterrows():
             if str(r["account_id"]) not in parent_ids and pd.notna(r["parent_id"]):
                 label = f"{r['account_id']} — {r['name']} ({r['type']})"
-                leaves.append((label, str(r["account_id"])) )
+                leaves.append((label, str(r["account_id"])))
         return sorted(leaves)
 
     def validate_voucher(self, lines: List[Dict]) -> Tuple[bool, str]:
@@ -363,7 +373,7 @@ svc = Service()
 def header():
     st.markdown(
         f"""
-        <div class=\"main-header\"> 
+        <div class="main-header"> 
             <h1>{APP_TITLE}</h1>
             <p>Version {VERSION} • Currency: {CURRENCY}</p>
         </div>
@@ -372,7 +382,6 @@ def header():
     )
 
 # Left Navigation (vertical tabs)
-
 def left_nav(options: list[str], key: str = "_nav", default: Optional[str] = None) -> str:
     if default is None:
         default = options[0]
@@ -389,7 +398,6 @@ def left_nav(options: list[str], key: str = "_nav", default: Optional[str] = Non
     return st.session_state[key]
 
 # Auto-code generation
-
 def generate_account_code(parent_id: Optional[str], account_type: str) -> str:
     a = svc.accounts()
     prefix_map = {"Assets": "1", "Liabilities": "2", "Equity": "3", "Income": "4", "Expenses": "5"}
@@ -412,6 +420,102 @@ def generate_account_code(parent_id: Optional[str], account_type: str) -> str:
                 max_suffix = max(max_suffix, int(suf))
     next_suffix = max_suffix + 1
     return f"{parent_id}{next_suffix:02d}"
+
+# ===== Excel / PDF helpers =====
+
+def df_to_excel_bytes(df: pd.DataFrame, filename: str, currency_cols: list[str] | None = None) -> bytes:
+    """
+    Return a .xlsx file (bytes) with Indian rupee formatting for specified columns.
+    """
+    currency_cols = currency_cols or []
+    out = io.BytesIO()
+    with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
+        df.to_excel(writer, sheet_name="Report", index=False)
+        wb  = writer.book
+        ws  = writer.sheets["Report"]
+
+        # Column widths
+        for i, col in enumerate(df.columns):
+            width = max(12, min(40, int(df[col].astype(str).str.len().max() if len(df) else 12)))
+            ws.set_column(i, i, width)
+
+        # INR format with lakh grouping
+        inr_fmt = wb.add_format({"num_format": "₹ #,##,##0.00"})
+        for col in currency_cols:
+            if col in df.columns:
+                idx = df.columns.get_loc(col)
+                ws.set_column(idx, idx, 16, inr_fmt)
+    return out.getvalue()
+
+def ledger_to_pdf_bytes(title: str, subtitle: str, rows: list[list[str]]) -> bytes:
+    """
+    rows = [ [Date, Voucher, Description, Debit, Credit, Balance], ... ]
+    Returns PDF bytes.
+    """
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=landscape(A4),
+        leftMargin=14*mm, rightMargin=14*mm, topMargin=12*mm, bottomMargin=12*mm
+    )
+    styles = getSampleStyleSheet()
+    story = []
+    story.append(Paragraph(f"<b>{title}</b>", styles["Title"]))
+    story.append(Paragraph(subtitle, styles["Normal"]))
+    story.append(Spacer(1, 6))
+
+    table = Table([[ "<b>Date</b>", "<b>Voucher</b>", "<b>Description</b>", "<b>Debit</b>", "<b>Credit</b>", "<b>Balance</b>" ]] + rows,
+                  repeatRows=1, colWidths=[28*mm, 28*mm, 90*mm, 28*mm, 28*mm, 32*mm])
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#1f4e79")),
+        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+        ("ALIGN", (0,0), (-1,0), "CENTER"),
+        ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
+        ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.whitesmoke, colors.lightgrey]),
+        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+    ]))
+    story.append(table)
+    story.append(Spacer(1, 6))
+    doc.build(story)
+    return buf.getvalue()
+
+def management_summary_pdf_bytes(header_title: str, summary: dict, sections: dict[str, pd.DataFrame]) -> bytes:
+    """
+    Build a simple multi-table management report PDF.
+    summary: { 'Assets': 0.0, 'Liabilities': 0.0, 'Equity': 0.0, 'Net Profit': 0.0, 'Vouchers': 0, 'Entries': 0 }
+    sections: { 'Trial Balance (Top 15)': df1, 'Key Accounts': df2, ... }
+    """
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4),
+                            leftMargin=14*mm, rightMargin=14*mm, topMargin=12*mm, bottomMargin=12*mm)
+    styles = getSampleStyleSheet()
+    story = []
+    story.append(Paragraph(f"<b>{header_title}</b>", styles["Title"]))
+    story.append(Spacer(1, 6))
+
+    lines = " • ".join([f"<b>{k}:</b> {format_inr(v) if isinstance(v,(int,float)) else v}" for k,v in summary.items()])
+    story.append(Paragraph(lines, styles["Normal"]))
+    story.append(Spacer(1, 8))
+
+    for title, df in sections.items():
+        story.append(Paragraph(f"<b>{title}</b>", styles["Heading3"]))
+        story.append(Spacer(1, 4))
+        data = [list(df.columns)] + df.astype(str).values.tolist()
+        table = Table(data, repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#2d5aa0")),
+            ("TEXTCOLOR",   (0,0), (-1,0), colors.white),
+            ("FONTNAME",    (0,0), (-1,0), "Helvetica-Bold"),
+            ("GRID",        (0,0), (-1,-1), 0.25, colors.lightgrey),
+            ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.whitesmoke, colors.lightgrey]),
+            ("VALIGN",      (0,0), (-1,-1), "MIDDLE"),
+        ]))
+        story.append(table)
+        story.append(Spacer(1, 10))
+
+    doc.build(story)
+    return buf.getvalue()
 
 # ---------------------------
 # Pages
@@ -443,17 +547,14 @@ def page_dashboard():
         v["date"] = pd.to_datetime(v["date"]).dt.strftime("%d-%m-%Y")
         st.dataframe(v[["voucher_id", "date", "narration", "reference"]], use_container_width=True)
 
-
 def _render_voucher_form(mode: str):
-    """Shared voucher UI with behavior per mode: 'Journal' | 'Payment' | 'Receipt'.
-    Payment: credit selected Cash/Bank; Receipt: debit selected Cash/Bank. Journal: free-form.
-    """
+    """Shared voucher UI with behavior per mode: 'Journal' | 'Payment' | 'Receipt'."""
     leaves = svc.leaf_accounts()
     if not leaves:
         st.warning("No leaf accounts. Add accounts in Masters first.")
         return
 
-    # Identify probable cash/bank accounts by name or type heuristic
+    # Identify probable cash/bank accounts by name/type heuristic
     leaf_df = svc.accounts()
     bank_like = []
     if not leaf_df.empty:
@@ -470,7 +571,7 @@ def _render_voucher_form(mode: str):
         ref = st.text_input("Reference/Cheque No.", key=f"ref_{mode}")
 
     default_tag = {"Journal": "[Journal]", "Payment": "[Payment]", "Receipt": "[Receipt]"}.get(mode, "")
-    narr = st.text_area("Narration", value=default_tag+" ", key=f"narr_{mode}")
+    narr = st.text_area("Narration", value=default_tag + " ", key=f"narr_{mode}")
 
     # Per-mode bank/cash selector
     bank_acc_id = None
@@ -526,7 +627,6 @@ def _render_voucher_form(mode: str):
         h1, h2 = st.columns(2)
         with h1:
             if st.button("➕ Add Bank/Cash Line", key=f"addbank_{mode}"):
-                # For Payment: credit bank; For Receipt: debit bank
                 new_line = {"account_id": bank_acc_id, "debit": 0.0, "credit": 0.0, "description": f"{mode} — Cash/Bank"}
                 lines.append(new_line)
                 st.rerun()
@@ -538,7 +638,6 @@ def _render_voucher_form(mode: str):
                 if abs(diff) < 0.01:
                     st.info("Already balanced.")
                 else:
-                    # try to find a bank line; if not, create one
                     bank_line = None
                     for l in lines:
                         if str(l.get("account_id")) == str(bank_acc_id):
@@ -547,17 +646,11 @@ def _render_voucher_form(mode: str):
                     if bank_line is None:
                         bank_line = {"account_id": bank_acc_id, "debit": 0.0, "credit": 0.0, "description": f"{mode} — Auto balance"}
                         lines.append(bank_line)
-                    # For Payment (Dr>Cr expected), set bank credit to cover; For Receipt, set bank debit
-                    if mode == "Payment":
-                        if diff > 0:
-                            bank_line["credit"] = round(float(bank_line.get("credit", 0) or 0) + diff, 2)
-                        elif diff < 0:
-                            bank_line["debit"] = round(float(bank_line.get("debit", 0) or 0) + abs(diff), 2)
-                    else:  # Receipt
-                        if diff > 0:
-                            bank_line["credit"] = round(float(bank_line.get("credit", 0) or 0) + diff, 2)
-                        elif diff < 0:
-                            bank_line["debit"] = round(float(bank_line.get("debit", 0) or 0) + abs(diff), 2)
+                    # If debits exceed credits → add credit to bank; else add debit to bank
+                    if diff > 0:
+                        bank_line["credit"] = round(float(bank_line.get("credit", 0) or 0) + diff, 2)
+                    elif diff < 0:
+                        bank_line["debit"] = round(float(bank_line.get("debit", 0) or 0) + abs(diff), 2)
                     st.rerun()
 
     td = sum(float(l.get("debit", 0) or 0) for l in lines)
@@ -570,7 +663,6 @@ def _render_voucher_form(mode: str):
     if abs(diff) >= 0.01:
         st.error("Voucher is not balanced.")
 
-    # Post
     if st.button("💾 Post Voucher", type="primary", disabled=(abs(diff) >= 0.01), key=f"post_{mode}"):
         if not narr.strip():
             st.error("Please enter a narration.")
@@ -582,7 +674,6 @@ def _render_voucher_form(mode: str):
                 st.rerun()
             else:
                 st.error(res)
-
 
 def page_vouchers():
     st.subheader("📝 Voucher Management")
@@ -612,8 +703,8 @@ def page_vouchers():
             v = v.copy()
             v["date"] = pd.to_datetime(v["date"]).dt.strftime("%d-%m-%Y")
             st.dataframe(v, use_container_width=True)
-            st.download_button("📥 Download CSV", v.to_csv(index=False), file_name=f"vouchers_{date.today()}.csv", mime="text/csv")
-
+            st.download_button("📥 Download CSV (UTF-8 BOM)", v.to_csv(index=False).encode("utf-8-sig"),
+                               file_name=f"vouchers_{date.today()}.csv", mime="text/csv")
 
 # ---------------------------
 # Ledger Page
@@ -663,8 +754,33 @@ def page_ledger():
     tot_dr = df["debit"].sum()
     tot_cr = df["credit"].sum()
     st.caption(f"Total Debits: {format_inr(tot_dr)} | Total Credits: {format_inr(tot_cr)} | Closing Balance: {format_inr(run)}")
-    st.download_button("📥 Download Ledger", disp.to_csv(index=False), file_name=f"ledger_{acc}_{date.today()}.csv", mime="text/csv")
 
+    # Excel download
+    xlsx_bytes = df_to_excel_bytes(
+        df=disp,
+        filename=f"ledger_{acc}_{date.today()}.xlsx",
+        currency_cols=["Debit", "Credit", "Balance"]
+    )
+    st.download_button(
+        "📥 Download Ledger (Excel)",
+        data=xlsx_bytes,
+        file_name=f"ledger_{acc}_{date.today()}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+    # PDF download
+    rows_for_pdf = disp.fillna("").astype(str).values.tolist()
+    pdf_bytes = ledger_to_pdf_bytes(
+        title="Account Ledger",
+        subtitle=f"Account: {sel} • Period: {dfrom} to {dto}",
+        rows=rows_for_pdf
+    )
+    st.download_button(
+        "📄 Download Ledger (PDF)",
+        data=pdf_bytes,
+        file_name=f"ledger_{acc}_{date.today()}.pdf",
+        mime="application/pdf"
+    )
 
 # ---------------------------
 # Trial Balance
@@ -679,8 +795,6 @@ def page_trial_balance():
         return
     show = tb.copy()
     show.rename(columns={"account_id": "Account ID", "account_name": "Account Name", "account_type": "Type", "total_debit": "Total Debit", "total_credit": "Total Credit"}, inplace=True)
-    show["Total Debit"] = show["Total Debit"].apply(format_inr)
-    show["Total Credit"] = show["Total Credit"].apply(format_inr)
     st.dataframe(show, use_container_width=True)
     td = float(tb["total_debit"].sum())
     tc = float(tb["total_credit"].sum())
@@ -689,8 +803,27 @@ def page_trial_balance():
         st.success("✅ Trial Balance is balanced")
     else:
         st.error(f"❌ Not balanced. Difference: {format_inr(td - tc)}")
-    st.download_button("📥 Download TB", show.to_csv(index=False), file_name=f"trial_balance_{as_on}.csv", mime="text/csv")
 
+    # Excel download with INR formatting
+    xlsx_bytes = df_to_excel_bytes(
+        df=show,
+        filename=f"trial_balance_{as_on}.xlsx",
+        currency_cols=["Total Debit", "Total Credit"]
+    )
+    st.download_button(
+        "📥 Download Trial Balance (Excel)",
+        data=xlsx_bytes,
+        file_name=f"trial_balance_{as_on}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+    # Optional CSV with BOM
+    st.download_button(
+        "⬇️ CSV (UTF-8 BOM)",
+        data=show.to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"trial_balance_{as_on}.csv",
+        mime="text/csv"
+    )
 
 # ---------------------------
 # Profit & Loss
@@ -714,8 +847,8 @@ def page_pl():
         st.info("Break-even")
     fig = px.bar(df[df["Head"] != "Net Profit/Loss"], x="Head", y="Amount", title="Income vs Expenses", color="Head")
     st.plotly_chart(fig, use_container_width=True)
-    st.download_button("📥 Download P&L", show.to_csv(index=False), file_name=f"pl_{as_on}.csv", mime="text/csv")
-
+    st.download_button("📥 Download P&L (CSV, UTF-8 BOM)", show.to_csv(index=False).encode("utf-8-sig"),
+                       file_name=f"pl_{as_on}.csv", mime="text/csv")
 
 # ---------------------------
 # Balance Sheet
@@ -739,8 +872,8 @@ def page_bs():
         st.error(f"❌ Difference: {format_inr(ta - tle)}")
     fig = px.pie(bs, values="Amount", names="Head", title="Balance Sheet Composition")
     st.plotly_chart(fig, use_container_width=True)
-    st.download_button("📥 Download BS", show.to_csv(index=False), file_name=f"balance_sheet_{as_on}.csv", mime="text/csv")
-
+    st.download_button("📥 Download BS (CSV, UTF-8 BOM)", show.to_csv(index=False).encode("utf-8-sig"),
+                       file_name=f"balance_sheet_{as_on}.csv", mime="text/csv")
 
 # ---------------------------
 # Masters (Chart of Accounts)
@@ -757,7 +890,8 @@ def page_masters():
             disp = a.copy()
             disp["created_date"] = pd.to_datetime(disp["created_date"]).dt.strftime("%d-%m-%Y")
             st.dataframe(disp, use_container_width=True)
-            st.download_button("📥 Download Accounts", disp.to_csv(index=False), file_name=f"accounts_{date.today()}.csv", mime="text/csv")
+            st.download_button("📥 Download Accounts (CSV, UTF-8 BOM)", disp.to_csv(index=False).encode("utf-8-sig"),
+                               file_name=f"accounts_{date.today()}.csv", mime="text/csv")
     with t2:
         c1, c2 = st.columns(2)
         with c1:
@@ -796,7 +930,6 @@ def page_masters():
                         st.rerun()
                     except Exception as e:
                         st.error(f"Error: {e}")
-
 
 # ---------------------------
 # Backup & Import
@@ -897,6 +1030,89 @@ def page_backup():
             except Exception as e:
                 st.error(f"Import failed: {e}")
 
+# ---------------------------
+# Management Report
+# ---------------------------
+
+def page_management_report():
+    st.subheader("📄 Management Report (Summary)")
+    as_on = st.date_input("As on", value=date.today())
+    tb = svc.trial_balance(str(as_on))
+    if tb.empty:
+        st.info("No data available.")
+        return
+
+    # Core KPIs
+    assets = (tb[tb.account_type=="Assets"]["total_debit"] - tb[tb.account_type=="Assets"]["total_credit"]).sum()
+    liab   = (tb[tb.account_type=="Liabilities"]["total_credit"] - tb[tb.account_type=="Liabilities"]["total_debit"]).sum()
+    eq_only = (tb[tb.account_type=="Equity"]["total_credit"] - tb[tb.account_type=="Equity"]["total_debit"]).sum()
+    pl_df, net = svc.pl(str(as_on))
+    equity_total = eq_only + net
+
+    v_count = len(svc.vouchers())
+    e_count = len(svc.entries())
+
+    summary = {
+        "Assets": float(assets),
+        "Liabilities": float(liab),
+        "Equity (incl. P&L)": float(equity_total),
+        "Net Profit": float(net),
+        "Vouchers": v_count,
+        "Entries": e_count
+    }
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Assets", format_inr(summary["Assets"]))
+    c2.metric("Liabilities", format_inr(summary["Liabilities"]))
+    c3.metric("Equity (incl. P&L)", format_inr(summary["Equity (incl. P&L)"]))
+    c4.metric("Net Profit", format_inr(summary["Net Profit"]))
+
+    tb2 = tb.copy()
+    tb2["Net"] = tb2["total_debit"] - tb2["total_credit"]
+    top15 = tb2.sort_values("Net", key=abs, ascending=False).head(15)
+    top15_view = top15[["account_id","account_name","account_type","total_debit","total_credit","Net"]].rename(
+        columns={
+            "account_id":"Account ID","account_name":"Account Name","account_type":"Type",
+            "total_debit":"Total Debit","total_credit":"Total Credit"
+        }
+    )
+    st.markdown("### Top Accounts by Net Movement")
+    st.dataframe(top15_view, use_container_width=True)
+
+    # Excel download
+    xlsx_bytes = df_to_excel_bytes(
+        df=top15_view,
+        filename=f"management_top_accounts_{as_on}.xlsx",
+        currency_cols=["Total Debit","Total Credit","Net"]
+    )
+    st.download_button(
+        "📥 Download Top Accounts (Excel)",
+        data=xlsx_bytes,
+        file_name=f"management_top_accounts_{as_on}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+    # Build PDF report
+    sections = {
+        "Trial Balance (Top 15 by |Net|)": top15_view.assign(
+            **{
+                "Total Debit": top15_view["Total Debit"].apply(lambda x: f"{format_inr(x)}"),
+                "Total Credit": top15_view["Total Credit"].apply(lambda x: f"{format_inr(x)}"),
+                "Net": top15_view["Net"].apply(lambda x: f"{format_inr(x)}"),
+            }
+        )
+    }
+    pdf_bytes = management_summary_pdf_bytes(
+        header_title="Management Summary Report",
+        summary=summary,
+        sections=sections
+    )
+    st.download_button(
+        "📄 Download Management Report (PDF)",
+        data=pdf_bytes,
+        file_name=f"management_report_{as_on}.pdf",
+        mime="application/pdf"
+    )
 
 # ---------------------------
 # Main
@@ -912,7 +1128,9 @@ def main():
     col_nav, col_body = st.columns([0.22, 0.78])
     with col_nav:
         page = left_nav([
-            "📊 Dashboard", "📝 Vouchers", "📚 Ledger", "⚖️ Trial Balance", "📈 Profit & Loss", "🏛️ Balance Sheet", "🏗️ Masters", "💾 Backup & Export"
+            "📊 Dashboard", "📝 Vouchers", "📚 Ledger", "⚖️ Trial Balance",
+            "📈 Profit & Loss", "🏛️ Balance Sheet", "🏗️ Masters",
+            "💾 Backup & Export", "📄 Management Report"
         ])
         st.caption(f"Version {VERSION}")
         if st.button("🔄 Refresh Data", use_container_width=True):
@@ -935,7 +1153,8 @@ def main():
             page_masters()
         elif page == "💾 Backup & Export":
             page_backup()
+        elif page == "📄 Management Report":
+            page_management_report()
 
 if __name__ == "__main__":
     main()
-
