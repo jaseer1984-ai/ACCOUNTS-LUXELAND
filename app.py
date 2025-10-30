@@ -1,9 +1,10 @@
-# app.py — Advanced Accounting System (INR) v2.2
+# app.py — Advanced Accounting System (INR) v2.2 (fixed)
 # -------------------------------------------------
 # New in v2.2
 # - Left-side vertical navigation (tabs-like menu)
+# - Voucher → Create Voucher now has 3 sub-tabs: Journal, Payment, Receipt
 # - Auto-generation of Account Codes (root & child)
-# - Keeps all v2.1 fixes: opening balance in ledger, safer DB, import/export, audit trail
+# - Keeps v2.1 fixes: opening balance in ledger, safer DB, import/export, audit trail
 
 from __future__ import annotations
 import os
@@ -20,7 +21,7 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 
-APP_TITLE = "Masters Luxe Land LLP"
+APP_TITLE = "Masters Luxe Land LLP — Advanced Accounting System"
 VERSION = "2.2.0"
 CURRENCY = "INR"
 DATA_DIR = "data"
@@ -527,9 +528,6 @@ def _render_voucher_form(mode: str):
             if st.button("➕ Add Bank/Cash Line", key=f"addbank_{mode}"):
                 # For Payment: credit bank; For Receipt: debit bank
                 new_line = {"account_id": bank_acc_id, "debit": 0.0, "credit": 0.0, "description": f"{mode} — Cash/Bank"}
-                if mode == "Receipt":
-                    new_line["debit"] = 0.01  # small placeholder to reveal the field
-                    new_line["debit"] = 0.0
                 lines.append(new_line)
                 st.rerun()
         with h2:
@@ -551,16 +549,15 @@ def _render_voucher_form(mode: str):
                         lines.append(bank_line)
                     # For Payment (Dr>Cr expected), set bank credit to cover; For Receipt, set bank debit
                     if mode == "Payment":
-                        # Need credits to equal debits → increase bank credit by (td - tc)
-                        bank_line["credit"] = round(float(bank_line.get("credit", 0) or 0) + max(diff, 0), 2)
-                        if diff < 0:
-                            # too much credit overall → put debit to bank
+                        if diff > 0:
+                            bank_line["credit"] = round(float(bank_line.get("credit", 0) or 0) + diff, 2)
+                        elif diff < 0:
                             bank_line["debit"] = round(float(bank_line.get("debit", 0) or 0) + abs(diff), 2)
                     else:  # Receipt
-                        bank_line["debit"] = round(float(bank_line.get("debit", 0) or 0) + max(-diff, 0), 2)
                         if diff > 0:
-                            # too much debit overall → add credit to bank
                             bank_line["credit"] = round(float(bank_line.get("credit", 0) or 0) + diff, 2)
+                        elif diff < 0:
+                            bank_line["debit"] = round(float(bank_line.get("debit", 0) or 0) + abs(diff), 2)
                     st.rerun()
 
     td = sum(float(l.get("debit", 0) or 0) for l in lines)
@@ -618,8 +615,11 @@ def page_vouchers():
             st.download_button("📥 Download CSV", v.to_csv(index=False), file_name=f"vouchers_{date.today()}.csv", mime="text/csv")
 
 
+# ---------------------------
+# Ledger Page
+# ---------------------------
 
-def page_ledger":}]}():
+def page_ledger():
     st.subheader("📚 Account Ledger")
     leaves = svc.leaf_accounts()
     if not leaves:
@@ -645,16 +645,14 @@ def page_ledger":}]}():
     for _, r in df.iterrows():
         delta = float(r.debit) - float(r.credit)
         run += delta
-        rows.append(
-            {
-                "date": pd.to_datetime(r.date).strftime("%d-%m-%Y"),
-                "voucher_id": r.voucher_id,
-                "description": r.description if r.description else (r.narration or ""),
-                "debit": float(r.debit) if r.debit else "",
-                "credit": float(r.credit) if r.credit else "",
-                "running_balance": run,
-            }
-        )
+        rows.append({
+            "date": pd.to_datetime(r.date).strftime("%d-%m-%Y"),
+            "voucher_id": r.voucher_id,
+            "description": r.description if r.description else (r.narration or ""),
+            "debit": float(r.debit) if r.debit else "",
+            "credit": float(r.credit) if r.credit else "",
+            "running_balance": run,
+        })
     out = pd.DataFrame(rows)
     disp = out.copy()
     disp["debit"] = disp["debit"].apply(lambda x: format_inr(x) if isinstance(x, (int, float)) and x > 0 else "")
@@ -667,6 +665,10 @@ def page_ledger":}]}():
     st.caption(f"Total Debits: {format_inr(tot_dr)} | Total Credits: {format_inr(tot_cr)} | Closing Balance: {format_inr(run)}")
     st.download_button("📥 Download Ledger", disp.to_csv(index=False), file_name=f"ledger_{acc}_{date.today()}.csv", mime="text/csv")
 
+
+# ---------------------------
+# Trial Balance
+# ---------------------------
 
 def page_trial_balance():
     st.subheader("⚖️ Trial Balance")
@@ -690,6 +692,10 @@ def page_trial_balance():
     st.download_button("📥 Download TB", show.to_csv(index=False), file_name=f"trial_balance_{as_on}.csv", mime="text/csv")
 
 
+# ---------------------------
+# Profit & Loss
+# ---------------------------
+
 def page_pl():
     st.subheader("📈 Profit & Loss Statement")
     as_on = st.date_input("As on", value=date.today())
@@ -711,6 +717,10 @@ def page_pl():
     st.download_button("📥 Download P&L", show.to_csv(index=False), file_name=f"pl_{as_on}.csv", mime="text/csv")
 
 
+# ---------------------------
+# Balance Sheet
+# ---------------------------
+
 def page_bs():
     st.subheader("🏛️ Balance Sheet")
     as_on = st.date_input("As on", value=date.today())
@@ -731,6 +741,10 @@ def page_bs():
     st.plotly_chart(fig, use_container_width=True)
     st.download_button("📥 Download BS", show.to_csv(index=False), file_name=f"balance_sheet_{as_on}.csv", mime="text/csv")
 
+
+# ---------------------------
+# Masters (Chart of Accounts)
+# ---------------------------
 
 def page_masters():
     st.subheader("🏗️ Chart of Accounts (Masters)")
@@ -784,10 +798,14 @@ def page_masters():
                         st.error(f"Error: {e}")
 
 
+# ---------------------------
+# Backup & Import
+# ---------------------------
+
 def page_backup():
     st.subheader("💾 Backup & Export")
     a = svc.accounts(); v = svc.vouchers(); e = svc.entries()
-    st.markdown("#### One-click ZIP backup (CSV + raw)")
+    st.markdown("#### One-click ZIP backup (CSV + metadata)")
     if st.button("📦 Create Backup ZIP"):
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
@@ -878,6 +896,7 @@ def page_backup():
                 st.success("Import completed")
             except Exception as e:
                 st.error(f"Import failed: {e}")
+
 
 # ---------------------------
 # Main
