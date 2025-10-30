@@ -1,15 +1,9 @@
-# app.py — Advanced Accounting System (INR) v2.1
+# app.py — Advanced Accounting System (INR) v2.2
 # -------------------------------------------------
-# ✅ What’s new vs your v2.0.0 draft
-# 1) True opening balance in Ledger (respects date range)
-# 2) Safer DB: FK enforcement, UNIQUE(line_no per voucher), faster queries
-# 3) Correct leaf‑account detection + better account pickers
-# 4) Full Import for vouchers & entries (with validation)
-# 5) Audit Trail hooks on create/import
-# 6) Balance Sheet equation clarified; Net Profit rolled into Equity
-# 7) Download-ready CSVs include INR & raw numeric sheets (2 tabs in ZIP)
-# 8) Minor UI polish and error messages; consistent INR format
-# -------------------------------------------------
+# New in v2.2
+# - Left-side vertical navigation (tabs-like menu)
+# - Auto-generation of Account Codes (root & child)
+# - Keeps all v2.1 fixes: opening balance in ledger, safer DB, import/export, audit trail
 
 from __future__ import annotations
 import os
@@ -27,7 +21,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 APP_TITLE = "Masters Luxe Land LLP — Advanced Accounting System"
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 CURRENCY = "INR"
 DATA_DIR = "data"
 DB_PATH = os.path.join(DATA_DIR, "accounting.db")
@@ -175,9 +169,6 @@ db = DB()
 # ---------------------------
 
 class Service:
-    def __init__(self):
-        pass
-
     def seed_roots(self):
         roots = [
             ("1000", "Assets", "Assets", None, 1, "Main asset group"),
@@ -225,7 +216,6 @@ class Service:
         tc = sum(float(l.get("credit", 0) or 0) for l in lines)
         if round(td - tc, 2) != 0:
             return False, f"Voucher not balanced: Dr {format_inr(td)} vs Cr {format_inr(tc)}"
-        # Leaf account check
         leaf_ids = {acc_id for _, acc_id in self.leaf_accounts()}
         for l in lines:
             acc = str(l.get("account_id", "")).strip()
@@ -380,6 +370,48 @@ def header():
         unsafe_allow_html=True,
     )
 
+# Left Navigation (vertical tabs)
+
+def left_nav(options: list[str], key: str = "_nav", default: Optional[str] = None) -> str:
+    if default is None:
+        default = options[0]
+    if key not in st.session_state:
+        st.session_state[key] = default
+    with st.container():
+        st.markdown("### 🧭 Menu")
+        for opt in options:
+            active = st.session_state[key] == opt
+            btn = st.button(opt, type=("primary" if active else "secondary"), use_container_width=True, key=f"nav_{opt}")
+            if btn:
+                st.session_state[key] = opt
+                st.rerun()
+    return st.session_state[key]
+
+# Auto-code generation
+
+def generate_account_code(parent_id: Optional[str], account_type: str) -> str:
+    a = svc.accounts()
+    prefix_map = {"Assets": "1", "Liabilities": "2", "Equity": "3", "Income": "4", "Expenses": "5"}
+    prefix = prefix_map.get(account_type, "9")
+    if not parent_id:
+        pool = a[a["account_id"].astype(str).str.startswith(prefix)]
+        nums = []
+        for aid in pool["account_id"].astype(str):
+            if aid.isdigit():
+                nums.append(int(aid))
+        base = int(prefix) * 1000
+        next_code = max([base] + nums) + 1
+        return f"{next_code:04d}"
+    children = a[a["parent_id"].astype(str) == str(parent_id)]
+    max_suffix = 0
+    for aid in children["account_id"].astype(str):
+        if aid.startswith(str(parent_id)):
+            suf = aid[len(str(parent_id)):] or "0"
+            if suf.isdigit():
+                max_suffix = max(max_suffix, int(suf))
+    next_suffix = max_suffix + 1
+    return f"{parent_id}{next_suffix:02d}"
+
 # ---------------------------
 # Pages
 # ---------------------------
@@ -515,7 +547,6 @@ def page_ledger():
         dfrom = st.date_input("From", value=date(date.today().year, 1, 1))
     with c3:
         dto = st.date_input("To", value=date.today())
-    # Opening balance BEFORE dfrom
     ob = svc.opening_balance(acc, str(dfrom))
     df = svc.ledger(acc, str(dfrom), str(dto))
     rows = []
@@ -613,7 +644,7 @@ def page_bs():
 
 def page_masters():
     st.subheader("🏗️ Chart of Accounts (Masters)")
-    t1, t2 = st.tabs(["View Accounts", "Add Account"])
+    t1, t2 = st.tabs(["View Accounts", "Add Account"]) 
     with t1:
         a = svc.accounts()
         if a.empty:
@@ -626,31 +657,41 @@ def page_masters():
     with t2:
         c1, c2 = st.columns(2)
         with c1:
-            aid = st.text_input("Account ID", placeholder="e.g., 1101")
+            aid = st.text_input("Account ID", key="aid", placeholder="Auto or enter manually")
             aname = st.text_input("Account Name", placeholder="e.g., State Bank of India")
         with c2:
-            atype = st.selectbox("Account Type", ["Assets", "Liabilities", "Equity", "Income", "Expenses"])
+            atype = st.selectbox("Account Type", ["Assets", "Liabilities", "Equity", "Income", "Expenses"], key="atype")
             a = svc.accounts()
-            parents = ["None (Root)"] + [f"{r.account_id} — {r.name}" for _, r in a.iterrows()] if not a.empty else ["None (Root)"]
-            parent_sel = st.selectbox("Parent Account", parents)
+            parent_opts = ["None (Root)"] + [f"{r.account_id} — {r.name}" for _, r in a.iterrows()] if not a.empty else ["None (Root)"]
+            parent_sel = st.selectbox("Parent Account", parent_opts, key="parent_sel")
+            parent_id = None if parent_sel.startswith("None") else parent_sel.split(" — ")[0]
         desc = st.text_area("Description (Optional)")
         active = st.checkbox("Active", value=True)
-        if st.button("➕ Create Account", type="primary"):
-            if not aid or not aname:
-                st.error("Account ID and Name are required.")
-            elif (not a.empty) and aid in a["account_id"].tolist():
-                st.error("Account ID already exists.")
-            else:
-                pid = None if parent_sel.startswith("None") else parent_sel.split(" — ")[0]
+
+        gen_col, create_col = st.columns([1,1])
+        with gen_col:
+            if st.button("⚙️ Auto-generate Code", use_container_width=True):
                 try:
-                    db.x(
-                        "INSERT INTO accounts(account_id,name,type,parent_id,is_active,description) VALUES(?,?,?,?,?,?)",
-                        (aid, aname, atype, pid, 1 if active else 0, desc),
-                    )
-                    st.success("Account created")
-                    st.rerun()
+                    code = generate_account_code(parent_id, st.session_state.get("atype", "Assets"))
+                    st.session_state["aid"] = code
+                    st.success(f"Suggested Code: {code}")
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(f"Auto-code failed: {e}")
+        with create_col:
+            if st.button("➕ Create Account", type="primary", use_container_width=True):
+                aid_val = (st.session_state.get("aid") or "").strip()
+                if not aid_val or not aname.strip():
+                    st.error("Account ID and Name are required.")
+                else:
+                    try:
+                        db.x(
+                            "INSERT INTO accounts(account_id,name,type,parent_id,is_active,description) VALUES(?,?,?,?,?,?)",
+                            (aid_val, aname.strip(), st.session_state.get("atype"), parent_id, 1 if active else 0, desc.strip()),
+                        )
+                        st.success("Account created")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {e}")
 
 
 def page_backup():
@@ -758,32 +799,33 @@ def main():
     init_database()
     svc.seed_roots()
     header()
-    with st.sidebar:
-        st.markdown("### 🧭 Navigation")
-        page = st.radio(
-            "Choose a page:",
-            ["📊 Dashboard", "📝 Vouchers", "📚 Ledger", "⚖️ Trial Balance", "📈 Profit & Loss", "🏛️ Balance Sheet", "🏗️ Masters", "💾 Backup & Export"],
-        )
-        st.markdown("---")
-        if st.button("🔄 Refresh Data"):
-            st.rerun()
+
+    col_nav, col_body = st.columns([0.22, 0.78])
+    with col_nav:
+        page = left_nav([
+            "📊 Dashboard", "📝 Vouchers", "📚 Ledger", "⚖️ Trial Balance", "📈 Profit & Loss", "🏛️ Balance Sheet", "🏗️ Masters", "💾 Backup & Export"
+        ])
         st.caption(f"Version {VERSION}")
-    if page == "📊 Dashboard":
-        page_dashboard()
-    elif page == "📝 Vouchers":
-        page_vouchers()
-    elif page == "📚 Ledger":
-        page_ledger()
-    elif page == "⚖️ Trial Balance":
-        page_trial_balance()
-    elif page == "📈 Profit & Loss":
-        page_pl()
-    elif page == "🏛️ Balance Sheet":
-        page_bs()
-    elif page == "🏗️ Masters":
-        page_masters()
-    elif page == "💾 Backup & Export":
-        page_backup()
+        if st.button("🔄 Refresh Data", use_container_width=True):
+            st.rerun()
+
+    with col_body:
+        if page == "📊 Dashboard":
+            page_dashboard()
+        elif page == "📝 Vouchers":
+            page_vouchers()
+        elif page == "📚 Ledger":
+            page_ledger()
+        elif page == "⚖️ Trial Balance":
+            page_trial_balance()
+        elif page == "📈 Profit & Loss":
+            page_pl()
+        elif page == "🏛️ Balance Sheet":
+            page_bs()
+        elif page == "🏗️ Masters":
+            page_masters()
+        elif page == "💾 Backup & Export":
+            page_backup()
 
 if __name__ == "__main__":
     main()
