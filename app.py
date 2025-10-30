@@ -21,8 +21,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 APP_TITLE = "Masters Luxe Land LLP "
-#VERSION = "2.2.0"
-#CURRENCY = "INR"
+
 DATA_DIR = "data"
 DB_PATH = os.path.join(DATA_DIR, "accounting.db")
 
@@ -829,5 +828,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
