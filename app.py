@@ -20,7 +20,7 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 
-APP_TITLE = "Masters Luxe Land LLP — Advanced Accounting System"
+APP_TITLE = "Masters Luxe Land LLP "
 VERSION = "2.2.0"
 CURRENCY = "INR"
 DATA_DIR = "data"
@@ -829,3 +829,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
